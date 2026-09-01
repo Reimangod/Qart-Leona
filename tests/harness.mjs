@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source.replace(/^import .+;\n/gm, ''), {
 
 // Exercise the production simulation and event loop without a browser or GPU.
 export function createGarden() {
-  const events = { canvas: new Map(), window: new Map(), document: new Map() };
+  const events = { canvas: new Map(), intro: new Map(), window: new Map(), document: new Map() };
   const captures = new Set();
   const timers = new Map();
   let timerId = 0;
@@ -21,11 +21,22 @@ export function createGarden() {
     hasPointerCapture: (id) => captures.has(id),
     releasePointerCapture: (id) => captures.delete(id),
   };
+  const introClasses = new Set();
+  const intro = {
+    addEventListener: (name, listener) => events.intro.set(name, listener),
+    classList: {
+      add: (name) => introClasses.add(name),
+      contains: (name) => introClasses.has(name),
+    },
+    setAttribute() {},
+    remove() {},
+  };
   const document = {
     hidden: false,
     querySelector(selector) {
-      if (selector !== '#art') throw new Error(`Unexpected UI: ${selector}`);
-      return canvas;
+      if (selector === '#art') return canvas;
+      if (selector === '#intro') return intro;
+      throw new Error(`Unexpected UI: ${selector}`);
     },
     addEventListener: (name, listener) => events.document.set(name, listener),
     createElement() { throw new Error('The artwork must not create a control panel'); },

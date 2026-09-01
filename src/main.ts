@@ -18,12 +18,20 @@ const BLOOM_MEMORY_INPUT = 0.12;
 const BLOOM_SPATIAL_RADIUS = 14;
 const BLOOM_MIN_DISTANCE = 8;
 const BLOOMS_PER_STEP = 2;
+const MAX_EXPOSURE = 52_000;
+const FADE_START_STEP = 100;
+const FADE_END_STEP = 180;
 
 type Field = {
   ar: Float32Array;
   ai: Float32Array;
   br: Float32Array;
   bi: Float32Array;
+};
+
+type WaveLayer = {
+  field: Field;
+  bornStep: number;
 };
 
 type Filament = {
@@ -60,6 +68,7 @@ type PointerMemory = {
 };
 
 const canvas = document.querySelector<HTMLCanvasElement>('#art')!;
+const intro = document.querySelector<HTMLButtonElement>('#intro')!;
 const renderer = new QuantumRenderer(canvas, SIZE);
 
 const makeField = (): Field => ({
@@ -72,9 +81,12 @@ const makeField = (): Field => ({
 let state = makeField();
 let xShifted = makeField();
 let next = makeField();
+const displayState = makeField();
+const layerShiftScratch = makeField();
 const phaseField = new Float32Array(CELLS);
 const phaseMemory = new Float32Array(CELLS);
 const probability = new Float32Array(CELLS);
+const displayProbability = new Float32Array(CELLS);
 const previousProbability = new Float32Array(CELLS);
 const stepInterference = new Float32Array(CELLS);
 const interferenceStrength = new Float32Array(CELLS);
@@ -84,12 +96,14 @@ const fieldPixels = new Uint8Array(CELLS * 4);
 const filaments: Filament[] = [];
 const blooms: Bloom[] = [];
 const cavities: Cavity[] = [];
+const waveLayers: WaveLayer[] = [];
 const pointers = new Map<number, PointerMemory>();
 
 let width = 1;
 let height = 1;
 let dpr = 1;
 let exposure = 1;
+let exposureFloor = 0;
 let stepCount = 0;
 let simulationTime = 0;
 let renderRequested = true;
@@ -112,32 +126,42 @@ function clearField(target: Field) {
   target.bi.fill(0);
 }
 
-function probabilityAt(i: number) {
-  return state.ar[i] ** 2 + state.ai[i] ** 2 + state.br[i] ** 2 + state.bi[i] ** 2;
+function fieldProbabilityAt(target: Field, i: number) {
+  return target.ar[i] ** 2 + target.ai[i] ** 2 + target.br[i] ** 2 + target.bi[i] ** 2;
 }
 
-function relativePhaseAt(i: number) {
-  const re = state.ar[i] * state.br[i] + state.ai[i] * state.bi[i];
-  const im = state.ai[i] * state.br[i] - state.ar[i] * state.bi[i];
+function probabilityAt(i: number) {
+  return fieldProbabilityAt(state, i);
+}
+
+function relativePhaseAt(i: number, target = state) {
+  const re = target.ar[i] * target.br[i] + target.ai[i] * target.bi[i];
+  const im = target.ai[i] * target.br[i] - target.ar[i] * target.bi[i];
   return Math.atan2(im, re);
+}
+
+function scaleField(target: Field, scale: number) {
+  for (let i = 0; i < CELLS; i++) {
+    target.ar[i] *= scale;
+    target.ai[i] *= scale;
+    target.br[i] *= scale;
+    target.bi[i] *= scale;
+  }
 }
 
 function normalize() {
   let total = 0;
   for (let i = 0; i < CELLS; i++) total += probabilityAt(i);
-  if (total < 1e-10 || !Number.isFinite(total)) return false;
+  if (total < 1e-10 || !Number.isFinite(total)) return 0;
   const scale = 1 / Math.sqrt(total);
-  for (let i = 0; i < CELLS; i++) {
-    state.ar[i] *= scale;
-    state.ai[i] *= scale;
-    state.br[i] *= scale;
-    state.bi[i] *= scale;
-  }
+  scaleField(state, scale);
+  for (const layer of waveLayers) scaleField(layer.field, scale);
   norm = 1;
-  return true;
+  return scale;
 }
 
 function seed(gx: number, gy: number, phase: number, sonic = true) {
+  const addingSeed = seedCount > 0;
   const radius = 2.1;
   const spread = 5;
   const seedFalloff = (ox: number, oy: number) => (
@@ -155,12 +179,9 @@ function seed(gx: number, gy: number, phase: number, sonic = true) {
   const nextSeedCount = seedCount + 1;
   const existingWeight = seedCount === 0 ? 0 : Math.sqrt(seedCount / nextSeedCount);
   const newSeedWeight = 1 / Math.sqrt(nextSeedCount * seedNormSquared);
-  for (let i = 0; i < CELLS; i++) {
-    state.ar[i] *= existingWeight;
-    state.ai[i] *= existingWeight;
-    state.br[i] *= existingWeight;
-    state.bi[i] *= existingWeight;
-  }
+  scaleField(state, existingWeight);
+  for (const layer of waveLayers) scaleField(layer.field, existingWeight);
+  const newLayer: WaveLayer = { field: makeField(), bornStep: stepCount };
   for (let oy = -spread; oy <= spread; oy++) {
     for (let ox = -spread; ox <= spread; ox++) {
       const x = wrap(Math.round(gx + ox));
@@ -170,12 +191,30 @@ function seed(gx: number, gy: number, phase: number, sonic = true) {
       state.ar[i] += falloff * newSeedWeight * INV_SQRT_2;
       state.br[i] += falloff * newSeedWeight * coinRe;
       state.bi[i] += falloff * newSeedWeight * coinIm;
+      newLayer.field.ar[i] += falloff * newSeedWeight * INV_SQRT_2;
+      newLayer.field.br[i] += falloff * newSeedWeight * coinRe;
+      newLayer.field.bi[i] += falloff * newSeedWeight * coinIm;
     }
   }
-  if (!normalize()) return;
+  waveLayers.push(newLayer);
+  const normalizationScale = normalize();
+  if (!normalizationScale) return;
+  if (addingSeed) {
+    // Preserve the displayed intensity of the old field after its uniform rescaling.
+    // This is one global display gain; the normalized amplitudes remain untouched.
+    const oldProbabilityScale = (existingWeight * normalizationScale) ** 2;
+    exposure = Math.min(MAX_EXPOSURE, exposure / oldProbabilityScale);
+    exposureFloor = exposure;
+  } else {
+    exposure = 1;
+    exposureFloor = 0;
+    renderer.clearFeedback();
+  }
   seedCount = nextSeedCount;
   hasQuantumState = true;
-  renderer.clearFeedback();
+  // Adding a seed is an input event, not an interference pulse from a walk step.
+  buildDisplayState();
+  for (let i = 0; i < CELLS; i++) previousProbability[i] = fieldProbabilityAt(displayState, i);
   renderRequested = true;
   if (sonic) audio?.strike(phase);
 }
@@ -184,9 +223,11 @@ function resetGarden() {
   clearField(state);
   clearField(xShifted);
   clearField(next);
+  clearField(displayState);
   phaseField.fill(0);
   phaseMemory.fill(0);
   probability.fill(0);
+  displayProbability.fill(0);
   previousProbability.fill(0);
   stepInterference.fill(0);
   interferenceStrength.fill(0);
@@ -195,10 +236,12 @@ function resetGarden() {
   filaments.length = 0;
   blooms.length = 0;
   cavities.length = 0;
+  waveLayers.length = 0;
   stepCount = 0;
   simulationTime = 0;
   norm = 0;
   exposure = 1;
+  exposureFloor = 0;
   interferencePulse = 0;
   hasQuantumState = false;
   seedCount = 0;
@@ -221,17 +264,22 @@ function paintPhase(gx: number, gy: number, amount: number, radius = 9) {
   }
 }
 
-function applyPhase(target: Field) {
+function updatePhaseField() {
   for (let i = 0; i < CELLS; i++) {
     phaseField[i] += (phaseMemory[i] - phaseField[i]) * 0.035;
     phaseMemory[i] *= 0.99925;
+  }
+}
+
+function applyPhase(target: Field) {
+  for (let i = 0; i < CELLS; i++) {
     const x = i % SIZE;
     const y = Math.floor(i / SIZE);
     const dx = x - HALF;
     const dy = y - HALF;
     const baselinePhase = (
-      0.42 * Math.sin(dx * 0.38)
-      + 0.32 * Math.cos(dy * 0.31 + stepCount * 0.12)
+      0.105 * Math.cos(dx * 0.19) * Math.cos(stepCount * 0.04)
+      + 0.08 * Math.cos(dy * 0.17) * Math.sin(stepCount * 0.04)
     );
     const phase = phaseField[i] + baselinePhase;
     if (Math.abs(phase) < 0.00001) continue;
@@ -248,13 +296,13 @@ function applyPhase(target: Field) {
   }
 }
 
-function applyCoin(target: Field) {
+function applyCoin(target: Field, recordInterference = true) {
   for (let i = 0; i < CELLS; i++) {
     const ar = target.ar[i];
     const ai = target.ai[i];
     const br = target.br[i];
     const bi = target.bi[i];
-    stepInterference[i] += Math.abs(2 * (ar * br + ai * bi));
+    if (recordInterference) stepInterference[i] += Math.abs(2 * (ar * br + ai * bi));
     target.ar[i] = (ar + br) * INV_SQRT_2;
     target.ai[i] = (ai + bi) * INV_SQRT_2;
     target.br[i] = (ar - br) * INV_SQRT_2;
@@ -298,9 +346,60 @@ function shiftY() {
   next = old;
 }
 
+function shiftLayer(target: Field, axis: 'x' | 'y') {
+  clearField(layerShiftScratch);
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      const i = idx(x, y);
+      const zero = axis === 'x' ? idx(wrap(x - 1), y) : idx(x, wrap(y - 1));
+      const one = axis === 'x' ? idx(wrap(x + 1), y) : idx(x, wrap(y + 1));
+      layerShiftScratch.ar[zero] += target.ar[i];
+      layerShiftScratch.ai[zero] += target.ai[i];
+      layerShiftScratch.br[one] += target.br[i];
+      layerShiftScratch.bi[one] += target.bi[i];
+    }
+  }
+  target.ar.set(layerShiftScratch.ar);
+  target.ai.set(layerShiftScratch.ai);
+  target.br.set(layerShiftScratch.br);
+  target.bi.set(layerShiftScratch.bi);
+}
+
+function rebuildStateFromLayers() {
+  clearField(state);
+  for (const layer of waveLayers) {
+    for (let i = 0; i < CELLS; i++) {
+      state.ar[i] += layer.field.ar[i];
+      state.ai[i] += layer.field.ai[i];
+      state.br[i] += layer.field.br[i];
+      state.bi[i] += layer.field.bi[i];
+    }
+  }
+}
+
+function pruneExpiredWaves() {
+  const active = waveLayers.filter(layer => waveOpacity(layer) > 0);
+  if (active.length === waveLayers.length) return false;
+  waveLayers.length = 0;
+  waveLayers.push(...active);
+  seedCount = waveLayers.length;
+  if (waveLayers.length === 0) {
+    resetGarden();
+    return true;
+  }
+  rebuildStateFromLayers();
+  const normalizationScale = normalize();
+  if (normalizationScale) {
+    exposure = Math.min(MAX_EXPOSURE, exposure / (normalizationScale * normalizationScale));
+    exposureFloor = exposure;
+  }
+  return false;
+}
+
 function finishQuantumStep() {
   stepCount++;
   simulationTime += STEP_MS;
+  if (pruneExpiredWaves()) return;
   if (stepCount % 20 === 0) normalize();
   updateInterferencePersistence();
   growBlooms(simulationTime);
@@ -310,10 +409,16 @@ function quantumStep() {
   if (!hasQuantumState) return;
   stepInterference.fill(0);
   applyCoin(state);
+  for (const layer of waveLayers) applyCoin(layer.field, false);
   shiftX();
+  for (const layer of waveLayers) shiftLayer(layer.field, 'x');
+  updatePhaseField();
   applyPhase(state);
+  for (const layer of waveLayers) applyPhase(layer.field);
   applyCoin(state);
+  for (const layer of waveLayers) applyCoin(layer.field, false);
   shiftY();
+  for (const layer of waveLayers) shiftLayer(layer.field, 'y');
   finishQuantumStep();
 }
 
@@ -338,6 +443,7 @@ function collapse() {
   }
   const phase = relativePhaseAt(chosen);
   clearField(state);
+  waveLayers.length = 0;
   seedCount = 0;
   stepInterference.fill(0);
   interferenceStrength.fill(0);
@@ -369,6 +475,7 @@ function phaseColor(phase: number, coherence: number, brightness = 1) {
 }
 
 function updateFieldPixels() {
+  buildDisplayState();
   let maxP = 0;
   let change = 0;
   const brightest: number[] = [];
@@ -388,24 +495,28 @@ function updateFieldPixels() {
         if (p > brightest[minIndex]) brightest[minIndex] = p;
       }
     }
-    change += Math.abs(p - previousProbability[i]);
-    previousProbability[i] = p;
   }
   if (maxP < 1e-12) {
     exposure = 1;
+    exposureFloor = 0;
     interferencePulse = 0;
     fieldPixels.fill(0);
     return;
   }
   const brightReference = brightest.reduce((sum, p) => sum + p, 0) / Math.max(1, brightest.length);
-  exposure += (0.52 / Math.max(brightReference, 0.00001) - exposure) * 0.24;
-  interferencePulse += (Math.min(1, change * 2.8) - interferencePulse) * 0.09;
+  // A fresh, concentrated seed must not pull down the exposure of older, spread-out waves.
+  const automaticExposure = Math.min(MAX_EXPOSURE, 0.52 / Math.max(brightReference, 0.00001));
+  const targetExposure = Math.max(exposureFloor, automaticExposure);
+  exposure += (targetExposure - exposure) * 0.24;
   for (let i = 0; i < CELLS; i++) {
-    const p = probability[i];
-    const ampA = Math.hypot(state.ar[i], state.ai[i]);
-    const ampB = Math.hypot(state.br[i], state.bi[i]);
+    const p = fieldProbabilityAt(displayState, i);
+    displayProbability[i] = p;
+    change += Math.abs(p - previousProbability[i]);
+    previousProbability[i] = p;
+    const ampA = Math.hypot(displayState.ar[i], displayState.ai[i]);
+    const ampB = Math.hypot(displayState.br[i], displayState.bi[i]);
     const coherence = p > 1e-10 ? Math.min(1, (2 * ampA * ampB) / p) : 0;
-    const phase = relativePhaseAt(i);
+    const phase = relativePhaseAt(i, displayState);
     const light = Math.pow(1 - Math.exp(-p * exposure * 3.8), 0.66);
     const color = phaseColor(phase, coherence, 0.42 + light * 1.38);
     const o = i * 4;
@@ -414,6 +525,7 @@ function updateFieldPixels() {
     fieldPixels[o + 2] = Math.min(255, color[2] * 255);
     fieldPixels[o + 3] = Math.min(255, light * 255);
   }
+  interferencePulse += (Math.min(1, change * 2.8) - interferencePulse) * 0.09;
 }
 
 function activeCell(tries = 30) {
@@ -421,8 +533,8 @@ function activeCell(tries = 30) {
   let bestP = -1;
   for (let n = 0; n < tries; n++) {
     const i = Math.floor(Math.random() * CELLS);
-    if (probability[i] > bestP) {
-      bestP = probability[i];
+    if (displayProbability[i] > bestP) {
+      bestP = displayProbability[i];
       best = i;
     }
   }
@@ -565,13 +677,14 @@ function updateFilaments(dt: number) {
     const x = wrap(Math.round(f.x));
     const y = wrap(Math.round(f.y));
     const i = idx(x, y);
-    const ur = state.ar[i] + state.br[i];
-    const ui = state.ai[i] + state.bi[i];
-    const current = (j: number) => ur * (state.ai[j] + state.bi[j]) - ui * (state.ar[j] + state.br[j]);
+    const ur = displayState.ar[i] + displayState.br[i];
+    const ui = displayState.ai[i] + displayState.bi[i];
+    const current = (j: number) => ur * (displayState.ai[j] + displayState.bi[j])
+      - ui * (displayState.ar[j] + displayState.br[j]);
     let vx = current(idx(wrap(x + 1), y)) - current(idx(wrap(x - 1), y));
     let vy = current(idx(x, wrap(y + 1))) - current(idx(x, wrap(y - 1)));
     const length = Math.hypot(vx, vy);
-    const localPhase = relativePhaseAt(i);
+    const localPhase = relativePhaseAt(i, displayState);
     if (length > 1e-9) {
       vx /= length;
       vy /= length;
@@ -598,8 +711,9 @@ function updateCavities() {
   const found: Cavity[] = [];
   for (let y = 5; y < SIZE - 5; y += 5) {
     for (let x = 5; x < SIZE - 5; x += 5) {
-      const center = probability[idx(x, y)];
-      const ring = probability[idx(x - 4, y)] + probability[idx(x + 4, y)] + probability[idx(x, y - 4)] + probability[idx(x, y + 4)];
+      const center = displayProbability[idx(x, y)];
+      const ring = displayProbability[idx(x - 4, y)] + displayProbability[idx(x + 4, y)]
+        + displayProbability[idx(x, y - 4)] + displayProbability[idx(x, y + 4)];
       const strength = Math.max(0, ring * 0.25 - center * 2.8) * exposure;
       if (strength > 0.03) found.push({ x, y, strength: Math.min(1, strength) });
     }
@@ -627,6 +741,28 @@ function screenToGrid(x: number, y: number) {
     : { x: ((ux - 0.5) * aspect + 0.5) * (SIZE - 1), y: uy * (SIZE - 1) };
 }
 
+function waveOpacity(layer: WaveLayer, atStep = stepCount) {
+  const age = atStep - layer.bornStep;
+  if (age <= FADE_START_STEP) return 1;
+  if (age >= FADE_END_STEP) return 0;
+  const progress = (age - FADE_START_STEP) / (FADE_END_STEP - FADE_START_STEP);
+  return 1 - progress * progress * (3 - 2 * progress);
+}
+
+function buildDisplayState() {
+  clearField(displayState);
+  for (const layer of waveLayers) {
+    const amplitude = Math.sqrt(waveOpacity(layer));
+    if (amplitude <= 0) continue;
+    for (let i = 0; i < CELLS; i++) {
+      displayState.ar[i] += layer.field.ar[i] * amplitude;
+      displayState.ai[i] += layer.field.ai[i] * amplitude;
+      displayState.br[i] += layer.field.br[i] * amplitude;
+      displayState.bi[i] += layer.field.bi[i] * amplitude;
+    }
+  }
+}
+
 function createRenderData(now: number, dt: number) {
   updateFilaments(dt);
   if (stepCount % 4 === 0) updateCavities();
@@ -638,7 +774,7 @@ function createRenderData(now: number, dt: number) {
     const to = gridToScreenUv(f.x, f.y);
     const envelope = Math.sin((f.age / f.life) * Math.PI);
     const color = phaseColor(f.phase, 1, 1.15);
-    const alpha = (0.05 + Math.min(0.22, probability[idx(wrap(Math.round(f.x)), wrap(Math.round(f.y)))] * exposure)) * envelope;
+    const alpha = (0.05 + Math.min(0.22, displayProbability[idx(wrap(Math.round(f.x)), wrap(Math.round(f.y)))] * exposure)) * envelope;
     lineValues.push(from.x * 2 - 1, 1 - from.y * 2, color[0], color[1], color[2], alpha);
     lineValues.push(to.x * 2 - 1, 1 - to.y * 2, color[0], color[1], color[2], alpha);
   }
@@ -746,6 +882,14 @@ function ensureAudio() {
   audio.wake();
 }
 
+function dismissIntro() {
+  if (intro.classList.contains('intro--leaving')) return;
+  intro.classList.add('intro--leaving');
+  intro.setAttribute('aria-hidden', 'true');
+  intro.addEventListener('transitionend', () => intro.remove(), { once: true });
+}
+
+intro.addEventListener('click', dismissIntro, { once: true });
 
 // Input changes the field; playback always advances automatically.
 canvas.addEventListener('pointerdown', (event) => {

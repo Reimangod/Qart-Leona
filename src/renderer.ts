@@ -29,20 +29,22 @@ void main() {
   vec4 core = texture(uField, fieldUv) * mask;
   vec4 nearGlow = vec4(0.0);
   vec4 farGlow = vec4(0.0);
-  vec2 drift = vec2(sin(uTime * 0.17), cos(uTime * 0.13)) * texel * 0.7;
+  vec2 drift = vec2(0.0);
   for (int i = 0; i < 8; i++) {
     float a = float(i) * 0.785398;
     vec2 d = vec2(cos(a), sin(a));
-    nearGlow += texture(uField, fieldUv + d * texel * 2.2 + drift);
-    farGlow += texture(uField, fieldUv + d * texel * 7.0 - drift);
+    nearGlow += texture(uField, fieldUv + d * texel * 1.5 + drift);
+    farGlow += texture(uField, fieldUv + d * texel * 4.5 - drift);
   }
   nearGlow *= 0.125 * mask;
   farGlow *= 0.125 * mask;
   vec3 previous = texture(uPrevious, vUv).rgb * uFade;
   float interferenceVoid = max(0.0, farGlow.a - core.a * 1.7);
-  vec3 quantumLight = core.rgb * core.a * 0.27;
-  quantumLight += nearGlow.rgb * nearGlow.a * (0.085 + uPulse * 0.028);
-  quantumLight += farGlow.rgb * farGlow.a * 0.02;
+  // Keep the existing wave shape: continuous contrast, without contour lines or a cutoff.
+  float coreLight = pow(core.a, 1.25);
+  vec3 quantumLight = core.rgb * coreLight * 0.31;
+  quantumLight += nearGlow.rgb * nearGlow.a * (0.04 + uPulse * 0.014);
+  quantumLight += farGlow.rgb * farGlow.a * 0.0045;
   vec3 color = (previous + quantumLight) * (1.0 - interferenceVoid * 0.08);
   outColor = vec4(min(color, vec3(5.0)), 1.0);
 }`;
@@ -342,7 +344,7 @@ export class QuantumRenderer {
     gl.uniform1i(gl.getUniformLocation(this.feedbackProgram, 'uField'), 1);
     gl.uniform2fv(gl.getUniformLocation(this.feedbackProgram, 'uFieldScale'), this.fieldScale);
     gl.uniform1f(gl.getUniformLocation(this.feedbackProgram, 'uTime'), frame.time);
-    gl.uniform1f(gl.getUniformLocation(this.feedbackProgram, 'uFade'), 0.963);
+    gl.uniform1f(gl.getUniformLocation(this.feedbackProgram, 'uFade'), 0.948);
     gl.uniform1f(gl.getUniformLocation(this.feedbackProgram, 'uPulse'), frame.pulse);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
