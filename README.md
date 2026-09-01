@@ -60,7 +60,3 @@ npm run preview
 ```
 
 `dist/`を静的サイトとして配信できます。
-
-## ベース
-
-[Qart](https://github.com/ruiname1218/Qart)と、その[派生版](https://github.com/Reimangod/Qart)をもとにした作品専用版です。
