@@ -85,4 +85,4 @@ docs/                コンセプト、数理、展示案内、実画面
 .github/workflows/   GitHub上の品質チェック
 ```
 
-[変更の方針](CONTRIBUTING.md) · [更新履歴](CHANGELOG.md) · [権利表記](NOTICE.md)
+[権利表記](NOTICE.md)

@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (file) => readFileSync(path.join(root, file), 'utf8');
-const docs = ['README.md', 'CONTRIBUTING.md', 'NOTICE.md', 'CHANGELOG.md',
+const docs = ['README.md', 'NOTICE.md',
   ...readdirSync(path.join(root, 'docs')).filter(file => file.endsWith('.md')).map(file => `docs/${file}`)];
 
 test('repository metadata and lockfile use the same project identity', () => {
