@@ -1,6 +1,12 @@
 {
-  "name": "qart-ochiai",
+  "name": "qart-leona",
+  "description": "量子ウォークが描く波動模様 — インタラクティブ・ジェネラティブアート",
   "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Reimangod/Qart-Leona.git"
+  },
   "version": "0.1.0",
   "type": "module",
   "engines": {
@@ -10,7 +16,8 @@
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4174 --strictPort",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm test && npm run build"
   },
   "devDependencies": {
     "typescript": "^5.9.2",
