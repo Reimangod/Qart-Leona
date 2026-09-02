@@ -1,6 +1,6 @@
 {
   "name": "qart-leona",
-  "description": "量子ウォークが描く波動模様 — インタラクティブ・ジェネラティブアート",
+  "description": "Qart：量子ウォークが描く波動模様",
   "private": true,
   "license": "UNLICENSED",
   "repository": {

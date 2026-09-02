@@ -35,7 +35,7 @@ test('all local documentation links resolve inside this repository', () => {
       checked++;
     }
   }
-  assert.ok(checked >= 20, 'expected linked documentation and gallery assets');
+  assert.ok(checked >= docs.length, 'expected linked documentation and gallery assets');
 });
 
 test('documentation contains no personal filesystem paths or internal citation markers', () => {
