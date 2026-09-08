@@ -14,10 +14,8 @@
 
 `package.json`は`private: true`、`license: UNLICENSED`としている。
 
-同梱の画像は本版の実行画面である。提案書のWordファイルは同梱していない。
+提案書のWordファイルは同梱していない。
 
 ## 依存ライブラリ
 
 TypeScript、Viteおよびそれらが使用するライブラリには、それぞれのライセンスが適用される。使用バージョンは[package-lock.json](package-lock.json)に記載している。
-
-[量子ウォークの数式・参考文献](docs/algorithm.md)
